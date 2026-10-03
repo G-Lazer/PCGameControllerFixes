@@ -1,0 +1,89 @@
+# Builds both DLLs on GitHub's Windows machines. Pushing a tag like v1.0.0 also
+# publishes a release with the zips, SHA256 fingerprints and (for public
+# repositories) a signed build attestation for every file.
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build Splinter Cell Conviction fix
+        shell: cmd
+        run: call splinter-cell-conviction\build.bat
+
+      - name: Build Ghost Recon Future Soldier fix
+        shell: cmd
+        run: call ghost-recon-future-soldier\build.bat
+
+      # The test tools need a real controller, which GitHub's machines don't
+      # have, so they're built here but run locally.
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path splinter-cell-conviction\build\dinput8.dll, splinter-cell-conviction\dinput8_proxy.ini `
+            -DestinationPath dist\SplinterCellConviction-dinput8.zip
+          Compress-Archive -Path ghost-recon-future-soldier\build\xinput1_3.dll, ghost-recon-future-soldier\xinput_proxy.ini `
+            -DestinationPath dist\GhostReconFutureSoldier-xinput1_3.zip
+          Copy-Item splinter-cell-conviction\build\dinput8.dll, ghost-recon-future-soldier\build\xinput1_3.dll dist\
+          Get-ChildItem dist | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: PCGameControllerFixes
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: PCGameControllerFixes
+          path: dist
+
+      # Attestations are only available for public repositories on free plans.
+      - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.dll
+            dist/*.zip
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Built by GitHub Actions from commit ${GITHUB_SHA}."
+            echo
+            echo "SHA256 fingerprints:"
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+          } > notes.md
+          gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" --notes-file notes.md

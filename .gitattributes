@@ -1,0 +1,5 @@
+# Normalize text files; keep Windows line endings where Windows tools expect them
+* text=auto
+*.bat text eol=crlf
+*.ini text eol=crlf
+*.def text eol=crlf
